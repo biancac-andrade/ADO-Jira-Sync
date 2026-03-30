@@ -1,0 +1,1 @@
+{"IsEncrypted":false,"Values":{"AzureWebJobsStorage":"","FUNCTIONS_WORKER_RUNTIME":"node","JIRA_BASE_URL":"https://sua-org.atlassian.net","JIRA_USER_EMAIL":"seu-email@empresa.com","JIRA_API_TOKEN":"seu-token-jira","JIRA_STATUS_CODE_REVIEW":"Code Review","AZURE_DEVOPS_PAT":"","WEBHOOK_SECRET":"","EVENT_STORE_DISABLED":"1","ALLOWED_REPOS":""}}
