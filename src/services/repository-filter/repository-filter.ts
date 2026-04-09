@@ -1,7 +1,3 @@
-/**
- * Optional repository filter (ALLOWED_REPOS). If empty, processes all repos in the project.
- */
-
 import type { AzureResource } from '../../types';
 
 const ALLOWED_REPOS_RAW = (process.env.ALLOWED_REPOS || '').trim();

@@ -1,7 +1,3 @@
-/**
- * Main webhook handler: receives POST from Azure DevOps and orchestrates Jira, dedup, and repository filter.
- */
-
 import type { AzureResource, InvocationContext, HttpRequest, WebhookPayload } from '../types';
 import {
   extractJiraKey,
@@ -9,11 +5,21 @@ import {
   formatBrasilia,
   addJiraComment,
   setJiraStatus,
-} from '../services/jira';
-import { getRunId, getRunUrl, getPipelineName, getBranch } from '../services/pipeline-payload';
-import { isDuplicate, markProcessed } from '../services/deduplication';
-import { getJiraKeyFromBuildCommit } from '../services/azure-devops';
-import { isRepoAllowed, getRepoName } from '../services/repository-filter';
+  clearIssueFields,
+} from '../services/jira/jira';
+import { getRunId, getRunUrl, getPipelineName, getBranch } from '../services/pipeline-payload/pipeline-payload';
+import { isDuplicate, markProcessed } from '../services/deduplication/deduplication';
+import { getJiraKeyFromBuildCommit } from '../services/azure-devops/azure-devops';
+import { isRepoAllowed, getRepoName } from '../services/repository-filter/repository-filter';
+import {
+  loadWorkflowEnv,
+  decidePullRequestEvent,
+  decideGitPush,
+  shouldTransitionOnPipelineSuccess,
+  getJiraFieldIdsToClearOnRework,
+  getPrObject,
+  type WorkflowEnv,
+} from '../services/workflow/workflow';
 
 interface RunStateContext {
   eventType: string;
@@ -25,6 +31,41 @@ interface RunStateContext {
   pipelineName: string | undefined;
   branch: string | undefined;
   runUrl: string | undefined;
+}
+
+/** Evita `String(object)` → "[object Object]" em títulos do payload Azure. */
+function stringFromUnknownTitle(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
+function titleForJiraKey(resource: AzureResource): string {
+  const prView = getPrObject(resource);
+  return stringFromUnknownTitle(prView.title) || stringFromUnknownTitle(resource.title) || '';
+}
+
+function branchRefForJiraKey(resource: AzureResource): string {
+  const prView = getPrObject(resource);
+  return (
+    (typeof prView.sourceBranch === 'string' ? prView.sourceBranch : null) ??
+    (typeof prView.sourceRefName === 'string' ? prView.sourceRefName : null) ??
+    resource.sourceBranch ??
+    resource.sourceRefName ??
+    ''
+  );
+}
+
+function jiraKeyFromGitPushRefs(resource: AzureResource): string | null {
+  if (!Array.isArray(resource.refUpdates)) return null;
+  for (const u of resource.refUpdates) {
+    const short = (u?.name ?? '').replace(/^refs\/heads\//, '');
+    if (!short) continue;
+    const k = extractJiraKey(short);
+    if (k) return k;
+  }
+  return null;
 }
 
 function validateSecret(
@@ -61,22 +102,25 @@ async function resolveJiraKey(
   eventType: string,
   resource: AzureResource
 ): Promise<string | null> {
-  const title = resource.title ?? '';
-  const sourceBranch = resource.sourceBranch ?? resource.sourceRefName ?? '';
+  const title = titleForJiraKey(resource);
+  const branchRef = branchRefForJiraKey(resource);
 
   let jiraKey = extractJiraKey(title);
-  if (!jiraKey && sourceBranch) {
-    jiraKey = extractJiraKey(sourceBranch.replace(/^refs\/heads\//, ''));
+  if (!jiraKey && branchRef) {
+    jiraKey = extractJiraKey(branchRef.replace(/^refs\/heads\//, ''));
   }
   const isPipelineEvent =
     eventType === 'build.complete' || eventType === 'ms.vss-pipelines.run-state-changed-event';
   if (!jiraKey && isPipelineEvent) {
     jiraKey = extractJiraKeyFromPayload(resource);
   }
-  const isMainBranch = /refs\/heads\/(main|master)$/.test(sourceBranch);
+  const isMainBranch = /refs\/heads\/(main|master)$/.test(branchRef);
   if (!jiraKey && isPipelineEvent && isMainBranch) {
     const keyFromCommit = await getJiraKeyFromBuildCommit(resource);
     if (keyFromCommit) jiraKey = keyFromCommit;
+  }
+  if (!jiraKey && eventType === 'git.push') {
+    jiraKey = jiraKeyFromGitPushRefs(resource);
   }
   return jiraKey;
 }
@@ -94,27 +138,54 @@ function appendOptionalParts(
   return out;
 }
 
-async function sendRunStateCommentAndResponse(
+function pipelineResultEmoji(result: string): string {
+  if (/succeed|success/i.test(result)) return '✅';
+  if (/fail|cancel/i.test(result)) return '❌';
+  return '➖';
+}
+
+function buildPipelineCompletedComment(runState: RunStateContext): string {
+  const startBr = formatBrasilia(runState.startTime);
+  const finishBr = runState.finishTime
+    ? formatBrasilia(runState.finishTime)
+    : formatBrasilia(runState.startTime);
+  const headLines = [
+    'Pipeline (Azure DevOps)',
+    `Horário início: ${startBr} (Brasília).`,
+    `Horário fim: ${finishBr} (Brasília).`,
+    `Resultado: ${pipelineResultEmoji(runState.result)} ${runState.result}.`,
+  ];
+  return appendOptionalParts(
+    headLines,
+    runState.pipelineName,
+    runState.branch,
+    runState.runUrl
+  ).join('\n');
+}
+
+async function tryMergeMainTransition(
   context: InvocationContext,
   jiraKey: string,
-  messageKey: 'start' | 'finish',
-  parts: string[],
-  runState: Pick<RunStateContext, 'eventType' | 'runId' | 'state'>
-): Promise<void> {
-  context.log('[webhook] DEBUG: Calling addJiraComment for', jiraKey, `(${messageKey})`);
-  const ok = await addJiraComment(jiraKey, parts.join('\n'));
-  if (ok) {
-    markProcessed(runState.eventType, runState.runId, runState.state, jiraKey);
-    context.log('[webhook] DEBUG: addJiraComment ok, marked as processed');
-  } else {
-    context.log('[webhook] DEBUG: addJiraComment failed → 500');
+  workflowEnv: WorkflowEnv,
+  shouldMergeMain: boolean,
+  commentOk: boolean
+): Promise<boolean> {
+  if (!shouldMergeMain) {
+    return true;
   }
-  context.res = {
-    status: ok ? 200 : 500,
-    body: ok
-      ? { message: `Comment added to ${jiraKey} (${messageKey})` }
-      : { error: 'Jira comment failed' },
-  };
+  if (commentOk) {
+    const transitionOk = await setJiraStatus(
+      jiraKey,
+      workflowEnv.readyMergeMain,
+      (...args) => context.log(...args)
+    );
+    context.log('[workflow] Ready to Merge Main transition:', transitionOk);
+    return transitionOk;
+  }
+  context.log(
+    '[webhook] Ready to Merge Main skipped: comentário na task falhou (exige comentário + transição)'
+  );
+  return false;
 }
 
 async function handleRunStateInProgress(
@@ -122,45 +193,77 @@ async function handleRunStateInProgress(
   jiraKey: string,
   runState: RunStateContext
 ): Promise<void> {
-  const startBr = formatBrasilia(runState.startTime);
-  const parts = appendOptionalParts(
-    [`Pipeline iniciou em ${startBr} (Brasília).`],
-    runState.pipelineName,
-    runState.branch,
-    runState.runUrl
-  );
-  await sendRunStateCommentAndResponse(context, jiraKey, 'start', parts, runState);
+  context.log('[webhook] Pipeline: sem comentário no início (apenas um bloco ao finalizar)');
+  markProcessed(runState.eventType, runState.runId, runState.state, jiraKey);
+  context.res = {
+    status: 200,
+    body: {
+      message: `Pipeline start acknowledged for ${jiraKey} (comment only on completion)`,
+    },
+  };
 }
 
 async function handleRunStateCompleted(
   context: InvocationContext,
   jiraKey: string,
-  runState: RunStateContext
+  runState: RunStateContext,
+  resource: AzureResource,
+  workflowEnv: WorkflowEnv
 ): Promise<void> {
-  const finishBr = runState.finishTime
-    ? formatBrasilia(runState.finishTime)
-    : formatBrasilia(runState.startTime);
-  const emoji = /succeed|success/i.test(runState.result)
-    ? '✅'
-    : /fail|cancel/i.test(runState.result)
-      ? '❌'
-      : '➖';
-  const parts = appendOptionalParts(
-    [
-      `Pipeline finalizou em ${finishBr} (Brasília).`,
-      `Resultado: ${emoji} ${runState.result}.`,
-    ],
-    runState.pipelineName,
+  const commentText = buildPipelineCompletedComment(runState);
+  context.log('[webhook] DEBUG: Calling addJiraComment for', jiraKey, '(finish)');
+  const commentOk = await addJiraComment(jiraKey, commentText);
+
+  const shouldReadyMergeMain = shouldTransitionOnPipelineSuccess(
+    resource,
+    runState.result,
     runState.branch,
-    runState.runUrl
+    runState.pipelineName,
+    workflowEnv
   );
-  await sendRunStateCommentAndResponse(context, jiraKey, 'finish', parts, runState);
+  context.log('[workflow] pipeline finish', {
+    pipelineName: runState.pipelineName ?? '(none)',
+    branch: runState.branch ?? '(none)',
+    result: runState.result,
+    shouldReadyMergeMain,
+    finalPipelineNames: [...workflowEnv.finalPipelineNames],
+    allowEmptyBranch: workflowEnv.finalPipelineAllowEmptyBranch,
+  });
+
+  const transitionOk = await tryMergeMainTransition(
+    context,
+    jiraKey,
+    workflowEnv,
+    shouldReadyMergeMain,
+    commentOk
+  );
+
+  const ok = shouldReadyMergeMain ? commentOk && transitionOk : commentOk;
+  if (ok) {
+    markProcessed(runState.eventType, runState.runId, runState.state, jiraKey);
+  }
+
+  context.res = {
+    status: ok ? 200 : 500,
+    body: ok
+      ? {
+          message: shouldReadyMergeMain
+            ? `Comment + Ready to Merge Main aplicados a ${jiraKey}`
+            : `Comment added to ${jiraKey} (finish)`,
+        }
+      : {
+          error: shouldReadyMergeMain
+            ? 'Comentário na task ou transição Ready to Merge Main falhou (ambos são necessários nesta pipeline)'
+            : 'Jira comment failed',
+        },
+  };
 }
 
 async function handleRunStateChanged(
   context: InvocationContext,
   resource: AzureResource,
-  jiraKey: string
+  jiraKey: string,
+  workflowEnv: WorkflowEnv
 ): Promise<void> {
   const runState: RunStateContext = {
     eventType: 'ms.vss-pipelines.run-state-changed-event',
@@ -198,7 +301,7 @@ async function handleRunStateChanged(
 
   if (isCompleted) {
     context.log('[webhook] DEBUG: State "completed", sending finish comment');
-    await handleRunStateCompleted(context, jiraKey, runState);
+    await handleRunStateCompleted(context, jiraKey, runState, resource, workflowEnv);
     context.log('[webhook] DEBUG: Comment (finish) sent, status=', context.res?.status);
     return;
   }
@@ -210,31 +313,67 @@ async function handleRunStateChanged(
   };
 }
 
-async function handlePullRequestUpdated(
+async function handlePullRequestWorkflow(
   context: InvocationContext,
+  eventType: string,
+  resource: AzureResource,
   jiraKey: string,
-  jiraStatusCodeReview: string
+  env: WorkflowEnv
 ): Promise<void> {
-  context.log('[webhook] Attempting to update Jira status:', jiraKey, '→', jiraStatusCodeReview);
-  context.log('[webhook] DEBUG: Calling setJiraStatus');
-  const ok = await setJiraStatus(jiraKey, jiraStatusCodeReview, (...args) =>
+  const decision = decidePullRequestEvent(eventType, resource, env);
+  context.log('[workflow] PR decision:', decision);
+  if (decision.kind === 'skip') {
+    context.res = { status: 200, body: { message: decision.reason, jiraKey } };
+    return;
+  }
+  const ok = await setJiraStatus(jiraKey, decision.statusName, (...args) =>
     context.log(...args)
   );
   if (ok) {
-    context.log('[webhook] Status updated successfully for', jiraKey);
-    context.log('[webhook] DEBUG: setJiraStatus ok → 200');
-  } else {
-    context.log('[webhook] DEBUG: setJiraStatus failed → 500');
+    context.log('[webhook] Status updated successfully for', jiraKey, '→', decision.statusName);
+    if (decision.clearReviewerFields) {
+      const fieldIds = getJiraFieldIdsToClearOnRework();
+      if (fieldIds.length) {
+        await clearIssueFields(jiraKey, fieldIds, (...args) => context.log(...args));
+      } else {
+        context.log('[workflow] clearReviewerFields: JIRA_FIELDS_CLEAR_ON_REWORK empty, skip');
+      }
+    }
   }
   context.res = {
     status: ok ? 200 : 500,
-    body: ok ? { message: `Status updated for ${jiraKey}` } : { error: 'Jira transition failed' },
+    body: ok
+      ? { message: `Transition: ${decision.statusName}`, reason: decision.reason, jiraKey }
+      : { error: 'Jira transition failed' },
+  };
+}
+
+async function handleGitPushWorkflow(
+  context: InvocationContext,
+  resource: AzureResource,
+  jiraKey: string,
+  env: WorkflowEnv
+): Promise<void> {
+  const decision = decideGitPush(resource, env);
+  context.log('[workflow] git.push decision:', decision);
+  if (decision.kind === 'skip') {
+    context.res = { status: 200, body: { message: decision.reason, jiraKey } };
+    return;
+  }
+  const ok = await setJiraStatus(jiraKey, decision.statusName, (...args) =>
+    context.log(...args)
+  );
+  context.res = {
+    status: ok ? 200 : 500,
+    body: ok
+      ? { message: `Transition: ${decision.statusName}`, reason: decision.reason, jiraKey }
+      : { error: 'Jira transition failed' },
   };
 }
 
 export async function webhook(context: InvocationContext, req: HttpRequest): Promise<void> {
   const webhookSecret = process.env.WEBHOOK_SECRET || '';
-  const jiraStatusCodeReview = process.env.JIRA_STATUS_CODE_REVIEW || 'Code Review';
+  const workflowEnv = loadWorkflowEnv();
 
   context.log('[webhook] POST received', req?.method, req?.url);
 
@@ -286,7 +425,7 @@ export async function webhook(context: InvocationContext, req: HttpRequest): Pro
 
   if (eventType === 'ms.vss-pipelines.run-state-changed-event') {
     context.log('[webhook] DEBUG: Processing run-state-changed for', jiraKey);
-    await handleRunStateChanged(context, resource, jiraKey);
+    await handleRunStateChanged(context, resource, jiraKey, workflowEnv);
     context.log(
       '[webhook] DEBUG: run-state-changed completed, status=',
       context.res?.status ?? '(not set)'
@@ -294,11 +433,25 @@ export async function webhook(context: InvocationContext, req: HttpRequest): Pro
     return;
   }
 
-  if (eventType === 'git.pullrequest.updated') {
-    context.log('[webhook] DEBUG: Processing git.pullrequest.updated for', jiraKey);
-    await handlePullRequestUpdated(context, jiraKey, jiraStatusCodeReview);
+  if (eventType === 'git.push') {
+    context.log('[webhook] DEBUG: Processing git.push for', jiraKey);
+    await handleGitPushWorkflow(context, resource, jiraKey, workflowEnv);
     context.log(
-      '[webhook] DEBUG: pullrequest.updated completed, status=',
+      '[webhook] DEBUG: git.push completed, status=',
+      context.res?.status ?? '(not set)'
+    );
+    return;
+  }
+
+  if (
+    eventType === 'git.pullrequest.created' ||
+    eventType === 'git.pullrequest.updated' ||
+    eventType === 'git.pullrequest.merged'
+  ) {
+    context.log('[webhook] DEBUG: Processing PR event', eventType, jiraKey);
+    await handlePullRequestWorkflow(context, eventType, resource, jiraKey, workflowEnv);
+    context.log(
+      '[webhook] DEBUG: PR workflow completed, status=',
       context.res?.status ?? '(not set)'
     );
     return;

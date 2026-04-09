@@ -1,8 +1,4 @@
-/**
- * Testes unitários: deduplicação de eventos (isDuplicate / markProcessed).
- */
-
-import { isDuplicate, markProcessed } from './index';
+import { isDuplicate, markProcessed } from './deduplication';
 
 describe('deduplication', () => {
   const eventType = 'run.statechanged';
@@ -37,7 +33,7 @@ describe('deduplication', () => {
   it('prune removes expired entries (TTL=0)', async () => {
     jest.resetModules();
     process.env.WEBHOOK_DEDUP_TTL_MS = '1';
-    const dedup = require('./index');
+    const dedup = require('./deduplication');
     dedup.markProcessed('e', 'r', 's', 'j');
     await new Promise((r) => setTimeout(r, 10));
     expect(dedup.isDuplicate('e', 'r', 's', 'j')).toBe(false);

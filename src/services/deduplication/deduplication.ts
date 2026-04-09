@@ -1,8 +1,3 @@
-/**
- * Prevents processing the same event twice (e.g. Azure retry).
- * Key: eventType + runId + state + jiraKey. TTL configurable via WEBHOOK_DEDUP_TTL_MS.
- */
-
 const TTL_MS = Number(process.env.WEBHOOK_DEDUP_TTL_MS) || 60 * 60 * 1000;
 
 interface DedupEntry {

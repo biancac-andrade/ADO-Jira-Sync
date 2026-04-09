@@ -25,5 +25,12 @@ module.exports = {
       },
     },
   ],
-  ignorePatterns: ['dist', 'node_modules', 'webhook', 'coverage', '*.config.js'],
+  ignorePatterns: [
+    'dist',
+    'node_modules',
+    'webhook',
+    'coverage',
+    '*.config.js',
+    '.eslintrc.cjs',
+  ],
 };

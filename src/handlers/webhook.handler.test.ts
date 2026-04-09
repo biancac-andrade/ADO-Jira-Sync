@@ -1,22 +1,17 @@
-/**
- * Testes unitários do handler do webhook: validação de request, filtro de repo, eventos e respostas.
- * Services are mocked so the handler does not call Jira or Azure.
- */
-
 import type { InvocationContext, HttpRequest, WebhookPayload } from '../types';
 
-jest.mock('../services/jira');
-jest.mock('../services/pipeline-payload');
-jest.mock('../services/deduplication');
-jest.mock('../services/azure-devops');
-jest.mock('../services/repository-filter');
+jest.mock('../services/jira/jira');
+jest.mock('../services/pipeline-payload/pipeline-payload');
+jest.mock('../services/deduplication/deduplication');
+jest.mock('../services/azure-devops/azure-devops');
+jest.mock('../services/repository-filter/repository-filter');
 
 import { webhook } from './webhook.handler';
-import * as jira from '../services/jira';
-import * as pipelinePayload from '../services/pipeline-payload';
-import * as deduplication from '../services/deduplication';
-import * as azureDevOps from '../services/azure-devops';
-import * as repositoryFilter from '../services/repository-filter';
+import * as jira from '../services/jira/jira';
+import * as pipelinePayload from '../services/pipeline-payload/pipeline-payload';
+import * as deduplication from '../services/deduplication/deduplication';
+import * as azureDevOps from '../services/azure-devops/azure-devops';
+import * as repositoryFilter from '../services/repository-filter/repository-filter';
 
 const mockJira = jest.mocked(jira);
 const mockPipelinePayload = jest.mocked(pipelinePayload);
@@ -37,11 +32,13 @@ function createRequest(overrides: Partial<HttpRequest> = {}): HttpRequest {
     method: 'POST',
     url: '/api/webhook',
     body: {
-      eventType: 'git.pullrequest.updated',
+      eventType: 'git.pullrequest.created',
       resource: {
         title: '[BEESEDI-11] Meu PR',
         repository: { name: 'meu-repo' },
         sourceBranch: 'refs/heads/feature/BEESEDI-11',
+        status: 'active',
+        isDraft: false,
       },
     },
     ...overrides,
@@ -55,6 +52,8 @@ describe('webhook.handler', () => {
     jest.clearAllMocks();
     context = createContext();
     delete process.env.WEBHOOK_SECRET;
+    process.env.FINAL_PIPELINE_TRANSITION_ENABLED = 'false';
+    process.env.JIRA_STATUS_CODE_REVIEW = 'Code Review';
     mockRepoFilter.isRepoAllowed.mockReturnValue(true);
     mockRepoFilter.getRepoName.mockReturnValue('meu-repo');
     mockJira.extractJiraKey.mockReturnValue('BEESEDI-11');
@@ -64,7 +63,9 @@ describe('webhook.handler', () => {
       return true;
     });
     mockJira.addJiraComment.mockResolvedValue(true);
+    mockJira.clearIssueFields = jest.fn().mockResolvedValue(true);
     mockJira.formatBrasilia.mockReturnValue('15/01/2024, 11:30');
+    delete process.env.JIRA_FIELDS_CLEAR_ON_REWORK;
     mockPipelinePayload.getRunId.mockReturnValue('run-123');
     mockPipelinePayload.getRunUrl.mockReturnValue('https://dev.azure.com/run/1');
     mockPipelinePayload.getPipelineName.mockReturnValue('CI');
@@ -86,8 +87,13 @@ describe('webhook.handler', () => {
       const req = createRequest({
         headers: { 'x-webhook-secret': 'secret123' },
         body: {
-          eventType: 'git.pullrequest.updated',
-          resource: { title: '[X-1] PR', repository: { name: 'r' } },
+          eventType: 'git.pullrequest.created',
+          resource: {
+            title: '[X-1] PR',
+            repository: { name: 'r' },
+            status: 'active',
+            isDraft: false,
+          },
         },
       });
       mockJira.extractJiraKey.mockReturnValue('X-1');
@@ -151,7 +157,7 @@ describe('webhook.handler', () => {
       await webhook(context, req);
       expect(mockJira.setJiraStatus).toHaveBeenCalledWith(
         'BEESEDI-11',
-        expect.any(String),
+        'Code Review',
         expect.any(Function)
       );
     });
@@ -175,8 +181,8 @@ describe('webhook.handler', () => {
     });
   });
 
-  describe('git.pullrequest.updated event', () => {
-    it('calls setJiraStatus and returns 200 on success', async () => {
+  describe('git.pullrequest events', () => {
+    it('created: calls setJiraStatus (Ready / legacy Code Review) and returns 200', async () => {
       const req = createRequest();
       await webhook(context, req);
       expect(mockJira.setJiraStatus).toHaveBeenCalledWith(
@@ -184,17 +190,74 @@ describe('webhook.handler', () => {
         'Code Review',
         expect.any(Function)
       );
-      expect(context.res).toEqual({
-        status: 200,
-        body: { message: 'Status updated for BEESEDI-11' },
+      expect(context.res?.status).toBe(200);
+      expect(context.res?.body).toMatchObject({
+        jiraKey: 'BEESEDI-11',
+        message: expect.stringContaining('Transition:'),
       });
-      expect(context.log).toHaveBeenCalledWith(
-        '[webhook] Status updated successfully for',
-        'BEESEDI-11'
+    });
+
+    it('updated sem sinais: skip (200, sem transição)', async () => {
+      const req = createRequest({
+        body: {
+          eventType: 'git.pullrequest.updated',
+          resource: {
+            title: '[BEESEDI-11] Meu PR',
+            repository: { name: 'meu-repo' },
+            sourceBranch: 'refs/heads/feature/BEESEDI-11',
+            status: 'active',
+            isDraft: false,
+            reviewers: [],
+          },
+        },
+      });
+      await webhook(context, req);
+      expect(mockJira.setJiraStatus).not.toHaveBeenCalled();
+      expect(context.res?.status).toBe(200);
+      expect(String((context.res?.body as { message?: string })?.message)).toContain('sem merge');
+    });
+
+    it('updated completed: skip (Ready to Merge Main só na pipeline)', async () => {
+      const req = createRequest({
+        body: {
+          eventType: 'git.pullrequest.updated',
+          resource: {
+            title: '[BEESEDI-11] Meu PR',
+            repository: { name: 'meu-repo' },
+            status: 'completed',
+            isDraft: false,
+          },
+        },
+      });
+      await webhook(context, req);
+      expect(mockJira.setJiraStatus).not.toHaveBeenCalled();
+      expect(context.res?.status).toBe(200);
+      expect(String((context.res?.body as { message?: string })?.message)).toContain('pipeline');
+    });
+
+    it('updated rework: limpa campos Jira quando JIRA_FIELDS_CLEAR_ON_REWORK está definido', async () => {
+      process.env.JIRA_FIELDS_CLEAR_ON_REWORK = 'customfield_10001,customfield_10002';
+      const req = createRequest({
+        body: {
+          eventType: 'git.pullrequest.updated',
+          resource: {
+            title: '[BEESEDI-11] Meu PR',
+            repository: { name: 'meu-repo' },
+            status: 'active',
+            isDraft: false,
+            reviewers: [{ id: 'rev-1', vote: -10 }],
+          },
+        },
+      });
+      await webhook(context, req);
+      expect(mockJira.clearIssueFields).toHaveBeenCalledWith(
+        'BEESEDI-11',
+        ['customfield_10001', 'customfield_10002'],
+        expect.any(Function)
       );
     });
 
-    it('returns 500 when setJiraStatus fails', async () => {
+    it('returns 500 when setJiraStatus fails (created)', async () => {
       mockJira.setJiraStatus.mockResolvedValue(false);
       const req = createRequest();
       await webhook(context, req);
@@ -229,7 +292,7 @@ describe('webhook.handler', () => {
       expect(mockJira.addJiraComment).not.toHaveBeenCalled();
     });
 
-    it('sends "in progress" comment and returns 200 when state is Running', async () => {
+    it('Running: não envia comentário no Jira (só ao completar)', async () => {
       mockJira.extractJiraKey.mockReturnValue(null);
       mockJira.extractJiraKeyFromPayload.mockReturnValue('JIRA-1');
       const req = createRequest({
@@ -239,18 +302,12 @@ describe('webhook.handler', () => {
         },
       });
       await webhook(context, req);
-      expect(mockJira.addJiraComment).toHaveBeenCalledWith(
-        'JIRA-1',
-        expect.stringContaining('Pipeline iniciou')
-      );
+      expect(mockJira.addJiraComment).not.toHaveBeenCalled();
       expect(mockDedup.markProcessed).toHaveBeenCalled();
       expect(context.res?.status).toBe(200);
-      expect(context.res?.body).toMatchObject({
-        message: expect.stringContaining('Comment added'),
-      });
     });
 
-    it('sends "completed" comment and returns 200 when state is Completed', async () => {
+    it('Completed: um bloco com Horário início, fim e resultado', async () => {
       mockJira.extractJiraKey.mockReturnValue(null);
       mockJira.extractJiraKeyFromPayload.mockReturnValue('JIRA-1');
       const req = createRequest({
@@ -260,15 +317,40 @@ describe('webhook.handler', () => {
         },
       });
       await webhook(context, req);
+      expect(mockJira.addJiraComment).toHaveBeenCalledTimes(1);
       expect(mockJira.addJiraComment).toHaveBeenCalledWith(
         'JIRA-1',
-        expect.stringContaining('Pipeline finalizou')
+        expect.stringMatching(/Pipeline \(Azure DevOps\)[\s\S]*Horário início:[\s\S]*Horário fim:/)
       );
       expect(mockDedup.markProcessed).toHaveBeenCalled();
       expect(context.res?.status).toBe(200);
     });
 
-    it('returns 500 when addJiraComment fails (completed)', async () => {
+    it('Running então Completed: só um comentário no fim', async () => {
+      mockJira.extractJiraKey.mockReturnValue(null);
+      mockJira.extractJiraKeyFromPayload.mockReturnValue('JIRA-1');
+      const reqRunning = createRequest({
+        body: {
+          eventType: 'ms.vss-pipelines.run-state-changed-event',
+          resource: { ...baseResource, state: 'Running' },
+        },
+      });
+      await webhook(context, reqRunning);
+      expect(mockJira.addJiraComment).not.toHaveBeenCalled();
+      const reqDone = createRequest({
+        body: {
+          eventType: 'ms.vss-pipelines.run-state-changed-event',
+          resource: { ...baseResource, state: 'Completed', result: 'succeeded' },
+        },
+      });
+      await webhook(context, reqDone);
+      expect(mockJira.addJiraComment).toHaveBeenCalledWith(
+        'JIRA-1',
+        expect.stringMatching(/Horário início:[\s\S]*Horário fim:/)
+      );
+    });
+
+    it('returns 500 when addJiraComment fails e transição final desligada', async () => {
       mockJira.extractJiraKey.mockReturnValue(null);
       mockJira.extractJiraKeyFromPayload.mockReturnValue('JIRA-1');
       mockJira.addJiraComment.mockResolvedValue(false);
@@ -279,7 +361,66 @@ describe('webhook.handler', () => {
         },
       });
       await webhook(context, req);
-      expect(context.res).toEqual({ status: 500, body: { error: 'Jira comment failed' } });
+      expect(context.res).toEqual({
+        status: 500,
+        body: { error: 'Jira comment failed' },
+      });
+    });
+
+    it('Ready to Merge Main: comentário falhou → 500 e não transiciona', async () => {
+      process.env.FINAL_PIPELINE_TRANSITION_ENABLED = 'true';
+      process.env.JIRA_STATUS_READY_MERGE_MAIN = 'Ready to Merge Main';
+      mockJira.extractJiraKey.mockReturnValue(null);
+      mockJira.extractJiraKeyFromPayload.mockReturnValue('JIRA-1');
+      mockJira.addJiraComment.mockResolvedValue(false);
+      mockJira.setJiraStatus.mockResolvedValue(true);
+      const req = createRequest({
+        body: {
+          eventType: 'ms.vss-pipelines.run-state-changed-event',
+          resource: {
+            ...baseResource,
+            state: 'Completed',
+            result: 'succeeded',
+            sourceBranch: 'refs/heads/main',
+          },
+        },
+      });
+      await webhook(context, req);
+      expect(mockJira.setJiraStatus).not.toHaveBeenCalled();
+      expect(context.res?.status).toBe(500);
+      expect(context.res?.body).toMatchObject({
+        error: expect.stringContaining('Ready to Merge Main'),
+      });
+    });
+
+    it('Ready to Merge Main: comentário ok → transição + 200', async () => {
+      process.env.FINAL_PIPELINE_TRANSITION_ENABLED = 'true';
+      process.env.JIRA_STATUS_READY_MERGE_MAIN = 'Ready to Merge Main';
+      mockJira.extractJiraKey.mockReturnValue(null);
+      mockJira.extractJiraKeyFromPayload.mockReturnValue('JIRA-1');
+      mockJira.addJiraComment.mockResolvedValue(true);
+      mockJira.setJiraStatus.mockResolvedValue(true);
+      const req = createRequest({
+        body: {
+          eventType: 'ms.vss-pipelines.run-state-changed-event',
+          resource: {
+            ...baseResource,
+            state: 'Completed',
+            result: 'succeeded',
+            sourceBranch: 'refs/heads/main',
+          },
+        },
+      });
+      await webhook(context, req);
+      expect(mockJira.setJiraStatus).toHaveBeenCalledWith(
+        'JIRA-1',
+        'Ready to Merge Main',
+        expect.any(Function)
+      );
+      expect(context.res?.status).toBe(200);
+      expect(context.res?.body).toMatchObject({
+        message: expect.stringContaining('Ready to Merge Main'),
+      });
     });
 
     it('returns 200 "Run state event ignored" for unmapped state', async () => {
@@ -340,7 +481,7 @@ describe('webhook.handler', () => {
       expect(mockAzureDevOps.getJiraKeyFromBuildCommit).toHaveBeenCalled();
       expect(mockJira.addJiraComment).toHaveBeenCalledWith(
         'JIRA-99',
-        expect.stringContaining('Pipeline finalizou')
+        expect.stringContaining('Horário início')
       );
       expect(context.res?.status).toBe(200);
     });

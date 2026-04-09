@@ -1,10 +1,5 @@
-/**
- * Azure DevOps client: fetches Jira key from commit message
- * (when the pipeline runs on main after merge).
- */
-
 import type { AzureResource } from '../../types';
-import { extractJiraKey } from '../jira';
+import { extractJiraKey } from '../jira/jira';
 
 const AZURE_PAT = process.env.AZURE_DEVOPS_PAT || '';
 

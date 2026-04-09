@@ -1,8 +1,3 @@
-/**
- * Tipos compartilhados: payload Azure DevOps, contexto da Function e recursos.
- */
-
-/** Recurso genérico do payload (pull request, run, build, etc.). */
 export interface AzureResource {
   title?: string;
   sourceBranch?: string;
@@ -17,6 +12,8 @@ export interface AzureResource {
     finishTime?: string;
     result?: string;
     sourceBranch?: string;
+    pipeline?: { name?: string };
+    resources?: { repositories?: Array<{ refName?: string; name?: string }> };
     _links?: { web?: { href?: string } };
   };
   id?: number;
@@ -39,17 +36,25 @@ export interface AzureResource {
     web?: { href?: string };
   };
   url?: string;
+  refUpdates?: Array<{ name?: string; oldObjectId?: string; newObjectId?: string }>;
+  status?: string;
+  isDraft?: boolean;
+  reviewers?: Array<{
+    id?: string;
+    displayName?: string;
+    uniqueName?: string;
+    vote?: number;
+  }>;
+  pullRequest?: AzureResource;
   [key: string]: unknown;
 }
 
-/** Payload completo do webhook Azure DevOps (Service Hooks). */
 export interface WebhookPayload {
   eventType?: string;
   resource?: AzureResource;
   [key: string]: unknown;
 }
 
-/** Request HTTP recebida pela Azure Function. */
 export interface HttpRequest {
   method?: string;
   url?: string;
@@ -59,13 +64,11 @@ export interface HttpRequest {
   rawBody?: WebhookPayload;
 }
 
-/** Resposta HTTP que a Function envia. */
 export interface HttpResponse {
   status: number;
   body: Record<string, unknown>;
 }
 
-/** Contexto da Azure Function (v3/v4). */
 export interface InvocationContext {
   log: (...args: unknown[]) => void;
   res?: HttpResponse;

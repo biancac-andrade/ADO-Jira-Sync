@@ -1,13 +1,8 @@
-/**
- * Jira service: authentication, date formatting, key extraction, comments, and status transition.
- */
-
 const JIRA_BASE = (process.env.JIRA_BASE_URL || '').replace(/\/$/, '');
 const JIRA_USER = process.env.JIRA_USER_EMAIL || '';
 const JIRA_TOKEN = process.env.JIRA_API_TOKEN || '';
 const JIRA_STATUS_CODE_REVIEW = process.env.JIRA_STATUS_CODE_REVIEW || 'Code Review';
 
-//maiúsculas + hífen + números ex: PROJETO-NÚMERO / BEESEDI-11 / PROJ-123
 const JIRA_KEY_REGEX = /\[?([A-Z]+-\d+)\]?/;
 
 function authHeader(): Record<string, string> {
@@ -78,6 +73,38 @@ export async function addJiraComment(issueKey: string, text: string): Promise<bo
   return true;
 }
 
+export async function clearIssueFields(
+  issueKey: string,
+  fieldIds: string[],
+  log: LogFn = () => {}
+): Promise<boolean> {
+  if (!fieldIds.length) return true;
+  if (!JIRA_BASE || !JIRA_USER || !JIRA_TOKEN) {
+    log('[jira] clearIssueFields: missing credentials');
+    return false;
+  }
+  const fields: Record<string, null | unknown[]> = {};
+  for (const id of fieldIds) {
+    const trimmed = id.trim();
+    if (!trimmed) continue;
+    fields[trimmed] = null;
+  }
+  if (Object.keys(fields).length === 0) return true;
+  const url = `${JIRA_BASE}/rest/api/3/issue/${issueKey}`;
+  const res = await fetchWithRetry(url, {
+    method: 'PUT',
+    headers: authHeader(),
+    body: JSON.stringify({ fields }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    log('[jira] clearIssueFields failed:', res.status, body);
+    return false;
+  }
+  log('[jira] clearIssueFields ok for', issueKey, Object.keys(fields).join(', '));
+  return true;
+}
+
 export type LogFn = (...args: unknown[]) => void;
 
 export async function setJiraStatus(
@@ -96,13 +123,20 @@ export async function setJiraStatus(
     log('[jira] GET transitions failed:', listRes.status, body);
     return false;
   }
-  const data = (await listRes.json()) as { transitions?: Array<{ id: string; name: string }> };
+  const data = (await listRes.json()) as {
+    transitions?: Array<{ id: string; name: string; to?: { name?: string } }>;
+  };
   const transitions = data.transitions || [];
-  const t = transitions.find((tr) => tr.name === statusName);
+  const t =
+    transitions.find((tr) => tr.name === statusName) ||
+    transitions.find((tr) => tr.to?.name === statusName);
   if (!t) {
-    const names = transitions.map((tr) => tr.name);
+    const names = transitions.map((tr) => {
+      const dest = tr.to?.name;
+      return dest ? `${tr.name} → ${dest}` : tr.name;
+    });
     log(
-      '[jira] Transition not found. Expected:',
+      '[jira] Transition not found. Expected name or destination status:',
       statusName,
       '| Available:',
       names.join(', ') || '(none)'

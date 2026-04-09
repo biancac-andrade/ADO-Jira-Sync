@@ -1,9 +1,5 @@
-/**
- * Testes unitários: extração de runId, URL, pipeline e branch do payload Azure.
- */
-
 import type { AzureResource } from '../../types';
-import { getRunId, getRunUrl, getPipelineName, getBranch } from './index';
+import { getRunId, getRunUrl, getPipelineName, getBranch } from './pipeline-payload';
 
 describe('pipeline-payload', () => {
   describe('getRunId', () => {
@@ -69,6 +65,14 @@ describe('pipeline-payload', () => {
     it('returns undefined when no name', () => {
       expect(getPipelineName({} as AzureResource)).toBeUndefined();
     });
+
+    it('uses run.pipeline.name (YAML / run-state-changed)', () => {
+      expect(
+        getPipelineName({
+          run: { pipeline: { name: 'weebhooksAutomation' } },
+        } as AzureResource)
+      ).toBe('weebhooksAutomation');
+    });
   });
 
   describe('getBranch', () => {
@@ -82,8 +86,24 @@ describe('pipeline-payload', () => {
       expect(getBranch({ run: { sourceBranch: 'refs/heads/main' } } as AzureResource)).toBe('main');
     });
 
+    it('uses sourceRefName when sourceBranch is missing', () => {
+      expect(getBranch({ sourceRefName: 'refs/heads/main' } as AzureResource)).toBe('main');
+    });
+
     it('returns undefined when no branch', () => {
       expect(getBranch({} as AzureResource)).toBeUndefined();
+    });
+
+    it('uses run.resources.repositories[0].refName when sourceBranch missing', () => {
+      expect(
+        getBranch({
+          run: {
+            resources: {
+              repositories: [{ refName: 'refs/heads/main' }],
+            },
+          },
+        } as unknown as AzureResource)
+      ).toBe('main');
     });
   });
 });

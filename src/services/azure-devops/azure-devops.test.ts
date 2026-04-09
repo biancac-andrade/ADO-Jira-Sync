@@ -1,7 +1,3 @@
-/**
- * Testes unitários: getJiraKeyFromBuildCommit (com fetch mock).
- */
-
 describe('azure-devops', () => {
   let fetchMock: jest.Mock;
 
@@ -17,7 +13,7 @@ describe('azure-devops', () => {
       ok: true,
       json: () => Promise.resolve({ comment: '[X-1] fix bug' }),
     });
-    const { getJiraKeyFromBuildCommit } = require('./index');
+    const { getJiraKeyFromBuildCommit } = require('./azure-devops');
     const resource = {
       repository: { url: 'https://dev.azure.com/org/proj/_git/repo' },
       sourceVersion: 'abc123',
@@ -31,7 +27,7 @@ describe('azure-devops', () => {
 
   it('returns null when AZURE_DEVOPS_PAT is not set', async () => {
     delete process.env.AZURE_DEVOPS_PAT;
-    const { getJiraKeyFromBuildCommit } = require('./index');
+    const { getJiraKeyFromBuildCommit } = require('./azure-devops');
     const resource = {
       repository: { url: 'https://dev.azure.com/org/proj/_git/repo' },
       sourceVersion: 'abc123',
@@ -42,7 +38,7 @@ describe('azure-devops', () => {
 
   it('returns null when repository.url is empty', async () => {
     process.env.AZURE_DEVOPS_PAT = 'pat';
-    const { getJiraKeyFromBuildCommit } = require('./index');
+    const { getJiraKeyFromBuildCommit } = require('./azure-devops');
     const resource = { repository: {}, sourceVersion: 'abc123' };
     expect(await getJiraKeyFromBuildCommit(resource)).toBe(null);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -50,7 +46,7 @@ describe('azure-devops', () => {
 
   it('returns null when sourceVersion and lastMergeCommit.commitId are empty', async () => {
     process.env.AZURE_DEVOPS_PAT = 'pat';
-    const { getJiraKeyFromBuildCommit } = require('./index');
+    const { getJiraKeyFromBuildCommit } = require('./azure-devops');
     const resource = { repository: { url: 'https://dev.azure.com/x' } };
     expect(await getJiraKeyFromBuildCommit(resource)).toBe(null);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -62,7 +58,7 @@ describe('azure-devops', () => {
       ok: true,
       json: () => Promise.resolve({ comment: '[Y-2] merge' }),
     });
-    const { getJiraKeyFromBuildCommit } = require('./index');
+    const { getJiraKeyFromBuildCommit } = require('./azure-devops');
     const resource = {
       repository: { url: 'https://dev.azure.com/org/proj/_git/repo' },
       lastMergeCommit: { commitId: 'merge456' },
@@ -77,7 +73,7 @@ describe('azure-devops', () => {
   it('returns null when fetch does not return ok', async () => {
     process.env.AZURE_DEVOPS_PAT = 'pat';
     fetchMock.mockResolvedValue({ ok: false });
-    const { getJiraKeyFromBuildCommit } = require('./index');
+    const { getJiraKeyFromBuildCommit } = require('./azure-devops');
     const resource = {
       repository: { url: 'https://dev.azure.com/x' },
       sourceVersion: 'abc',
@@ -88,7 +84,7 @@ describe('azure-devops', () => {
   it('returns null when fetch throws', async () => {
     process.env.AZURE_DEVOPS_PAT = 'pat';
     fetchMock.mockRejectedValue(new Error('network'));
-    const { getJiraKeyFromBuildCommit } = require('./index');
+    const { getJiraKeyFromBuildCommit } = require('./azure-devops');
     const resource = {
       repository: { url: 'https://dev.azure.com/x' },
       sourceVersion: 'abc',

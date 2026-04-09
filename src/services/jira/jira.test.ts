@@ -1,8 +1,5 @@
-/**
- * Unit tests: date formatting and Jira key extraction (no API calls).
- */
 
-import { formatBrasilia, extractJiraKey, extractJiraKeyFromPayload } from './index';
+import { formatBrasilia, extractJiraKey, extractJiraKeyFromPayload } from './jira';
 
 describe('jira', () => {
   describe('formatBrasilia', () => {
@@ -79,7 +76,7 @@ describe('jira', () => {
 
     it('returns true when POST comment returns ok', async () => {
       fetchMock.mockResolvedValue({ ok: true });
-      const { addJiraComment } = require('./index');
+      const { addJiraComment } = require('./jira');
       expect(await addJiraComment('X-1', 'texto')).toBe(true);
       expect(fetchMock).toHaveBeenCalledWith(
         'https://test.atlassian.net/rest/api/3/issue/X-1/comment',
@@ -90,14 +87,14 @@ describe('jira', () => {
     it('returns false when credentials are missing', async () => {
       jest.resetModules();
       delete process.env.JIRA_BASE_URL;
-      const { addJiraComment } = require('./index');
+      const { addJiraComment } = require('./jira');
       expect(await addJiraComment('X-1', 'texto')).toBe(false);
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('returns false when POST returns not-ok', async () => {
       fetchMock.mockResolvedValue({ ok: false, status: 400, text: () => Promise.resolve('bad') });
-      const { addJiraComment } = require('./index');
+      const { addJiraComment } = require('./jira');
       expect(await addJiraComment('X-1', 'texto')).toBe(false);
     });
 
@@ -106,7 +103,7 @@ describe('jira', () => {
       fetchMock
         .mockResolvedValueOnce({ ok: false, status: 500, text: () => Promise.resolve('error') })
         .mockResolvedValueOnce({ ok: true });
-      const { addJiraComment } = require('./index');
+      const { addJiraComment } = require('./jira');
       const promise = addJiraComment('X-1', 'texto');
       await jest.advanceTimersByTimeAsync(2000);
       await expect(promise).resolves.toBe(true);
@@ -134,21 +131,36 @@ describe('jira', () => {
           json: () => Promise.resolve({ transitions: [{ id: '1', name: 'Code Review' }] }),
         })
         .mockResolvedValueOnce({ ok: true });
-      const { setJiraStatus } = require('./index');
+      const { setJiraStatus } = require('./jira');
       expect(await setJiraStatus('X-1', 'Code Review')).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('matches transition by destination status (to.name) when transition name differs', async () => {
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              transitions: [{ id: '9', name: 'Move to review', to: { name: 'Ready to Merge Main' } }],
+            }),
+        })
+        .mockResolvedValueOnce({ ok: true });
+      const { setJiraStatus } = require('./jira');
+      expect(await setJiraStatus('X-1', 'Ready to Merge Main')).toBe(true);
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it('returns false when credentials are missing', async () => {
       jest.resetModules();
       delete process.env.JIRA_BASE_URL;
-      const { setJiraStatus } = require('./index');
+      const { setJiraStatus } = require('./jira');
       expect(await setJiraStatus('X-1', 'Code Review')).toBe(false);
     });
 
     it('returns false when GET transitions fails', async () => {
       fetchMock.mockResolvedValue({ ok: false, text: () => Promise.resolve('err') });
-      const { setJiraStatus } = require('./index');
+      const { setJiraStatus } = require('./jira');
       expect(await setJiraStatus('X-1', 'Code Review')).toBe(false);
     });
 
@@ -158,7 +170,7 @@ describe('jira', () => {
         json: () => Promise.resolve({ transitions: [{ id: '2', name: 'Done' }] }),
       });
       const log = jest.fn();
-      const { setJiraStatus } = require('./index');
+      const { setJiraStatus } = require('./jira');
       expect(await setJiraStatus('X-1', 'Code Review', log)).toBe(false);
       expect(log).toHaveBeenCalledWith(
         expect.stringContaining('Transition not found'),
@@ -175,8 +187,40 @@ describe('jira', () => {
           json: () => Promise.resolve({ transitions: [{ id: '1', name: 'Code Review' }] }),
         })
         .mockResolvedValueOnce({ ok: false, text: () => Promise.resolve('err') });
-      const { setJiraStatus } = require('./index');
+      const { setJiraStatus } = require('./jira');
       expect(await setJiraStatus('X-1', 'Code Review')).toBe(false);
+    });
+  });
+
+  describe('clearIssueFields (with fetch mock)', () => {
+    let fetchMock: jest.Mock;
+
+    beforeEach(() => {
+      jest.resetModules();
+      process.env.JIRA_BASE_URL = 'https://test.atlassian.net';
+      process.env.JIRA_USER_EMAIL = 'test@test.com';
+      process.env.JIRA_API_TOKEN = 'token';
+      fetchMock = jest.fn();
+      (globalThis as unknown as { fetch: jest.Mock }).fetch = fetchMock;
+    });
+
+    it('returns true without calling API when fieldIds is empty', async () => {
+      const { clearIssueFields } = require('./jira');
+      expect(await clearIssueFields('X-1', [], jest.fn())).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('PUT issue fields null when ok', async () => {
+      fetchMock.mockResolvedValue({ ok: true });
+      const { clearIssueFields } = require('./jira');
+      expect(await clearIssueFields('X-1', ['customfield_10001'], jest.fn())).toBe(true);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://test.atlassian.net/rest/api/3/issue/X-1',
+        expect.objectContaining({
+          method: 'PUT',
+          body: expect.stringContaining('customfield_10001'),
+        })
+      );
     });
   });
 });
