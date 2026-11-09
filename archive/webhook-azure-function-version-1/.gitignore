@@ -1,0 +1,20 @@
+local.settings.json
+node_modules
+.azure
+*.log
+deploy.zip
+.env
+.env.local
+dist
+*.tsbuildinfo
+webhook
+
+# Azurite (emulador de Storage local) – dados persistentes; não commitar
+__azurite_db_*
+__blobstorage__
+__queuestorage__
+AzuriteConfig
+.azurite
+
+# Jest
+coverage

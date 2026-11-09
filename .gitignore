@@ -1,3 +1,4 @@
+.DS_Store
 local.settings.json
 node_modules
 .azure
@@ -18,3 +19,11 @@ AzuriteConfig
 
 # Jest
 coverage
+
+# Legado em archive — não versionar artefatos pesados
+archive/**/node_modules
+archive/**/dist
+archive/**/deploy.zip
+archive/**/local.settings.json
+archive/**/.azurite
+archive/**/__azurite_db_*

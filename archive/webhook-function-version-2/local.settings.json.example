@@ -1,0 +1,25 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "",
+    "AZURE_DEVOPS_IGNORE_REVIEWER_IDS": "",
+    "AZURE_DEVOPS_PAT": "",
+    "ALLOWED_REPOS": "",
+    "FINAL_PIPELINE_BRANCH_REGEX": "^(main|master)$",
+    "FINAL_PIPELINE_NAMES": "",
+    "FINAL_PIPELINE_ALLOW_EMPTY_BRANCH": "false",
+    "FINAL_PIPELINE_TRANSITION_ENABLED": "true",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "JIRA_BASE_URL": "https://sua-org.atlassian.net",
+    "JIRA_USER_EMAIL": "seu-email@empresa.com",
+    "JIRA_API_TOKEN": "seu-token-jira",
+    "JIRA_STATUS_IN_DEVELOPMENT": "In Development",
+    "JIRA_STATUS_READY_CODE_REVIEW": "Ready for Code Review",
+    "JIRA_STATUS_CODE_IN_REVIEW": "In Code Review",
+    "JIRA_STATUS_READY_MERGE_MAIN": "Merged to Main",
+    "JIRA_FIELDS_CLEAR_ON_REWORK": "",
+    "WORKFLOW_REWORK_VOTE_MAX": "-5",
+    "WORKFLOW_APPROVE_VOTE_MIN": "10",
+    "WEBHOOK_SECRET": ""
+  }
+}

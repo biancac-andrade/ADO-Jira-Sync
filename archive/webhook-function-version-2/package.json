@@ -1,0 +1,42 @@
+{
+  "name": "webhook-function-version-2",
+  "version": "1.0.0",
+  "description": "Azure Function: webhook Azure DevOps → Jira (repositório separado para deploy no Azure). (v2 — melhorias pós-apresentação).",
+  "main": "dist/handlers/webhook.handler.js",
+  "scripts": {
+    "build": "npx tsc && node -e \"require('fs').mkdirSync('webhook',{recursive:true}); require('fs').copyFileSync('src/webhook/function.json','webhook/function.json')\"",
+    "clean": "rm -rf dist",
+    "clean:azurite": "rm -f __azurite_db_*.json AzuriteConfig 2>/dev/null; rm -rf __blobstorage__ __queuestorage__ .azurite 2>/dev/null; rm -f webhook/__azurite_db_*.json 2>/dev/null; echo 'Arquivos do Azurite removidos.'",
+    "start:storage": "npx azurite --silent -l .azurite",
+    "start": "npm run build && func start",
+    "publish": "npm run build && func azure functionapp publish",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/node": "^20.10.0",
+    "@types/jest": "^29.5.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "azurite": "^3.34.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-jest": "^27.9.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.2.0",
+    "ts-jest": "^29.1.0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "types": "./dist/handlers/webhook.handler.d.ts"
+}

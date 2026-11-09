@@ -1,0 +1,15 @@
+{
+  "eventType": "git.pullrequest.updated",
+  "publisherId": "tfs",
+  "resource": {
+    "pullRequestId": 1,
+    "status": "active",
+    "title": "[BEESEDI-1] Teste webhook",
+    "sourceRefName": "refs/heads/feature/master/BEESEDI-1",
+    "targetRefName": "refs/heads/main",
+    "reviewers": []
+  },
+  "message": {
+    "text": "Bianca Cristina de Andrade changed the reviewer list for pull request 1 ([BEESEDI-1] Teste webhook) in weebhooksAutomation"
+  }
+}
