@@ -1,3 +1,13 @@
+/**
+ * Ponto de entrada da Azure Function (HTTP POST /api/webhook).
+ *
+ * Responsabilidades deste arquivo:
+ * - Autenticação opcional (WEBHOOK_SECRET), validação do body e ALLOWED_REPOS
+ * - Resolver a chave Jira a partir do payload Azure DevOps
+ * - Rotear por eventType para workflow (git/PR), comentários de pipeline ou ignorar
+ *
+ * Regras de negócio de transição ficam em services/workflow — não duplicar aqui.
+ */
 import type { AzureResource, InvocationContext, HttpRequest, WebhookPayload } from '../types';
 import {
   extractJiraKey,

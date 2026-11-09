@@ -1,7 +1,11 @@
 {
-  "name": "webhook-function-version-2",
-  "version": "1.0.0",
-  "description": "Azure Function: webhook Azure DevOps → Jira (repositório separado para deploy no Azure). (v2 — melhorias pós-apresentação).",
+  "name": "azure-devops-jira-sync",
+  "version": "2.0.0",
+  "description": "Azure Function (TS): Service Hooks Azure DevOps → Jira Cloud — workflow, PR, pipeline. Ver README.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SEU_USUARIO/azure-devops-jira-sync.git"
+  },
   "main": "dist/handlers/webhook.handler.js",
   "scripts": {
     "build": "npx tsc && node -e \"require('fs').mkdirSync('webhook',{recursive:true}); require('fs').copyFileSync('src/webhook/function.json','webhook/function.json')\"",
@@ -35,8 +39,14 @@
     "prettier": "^3.2.0",
     "ts-jest": "^29.1.0"
   },
-  "keywords": [],
+  "keywords": [
+    "azure-devops",
+    "jira",
+    "azure-functions",
+    "webhook",
+    "service-hooks"
+  ],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "types": "./dist/handlers/webhook.handler.d.ts"
 }

@@ -1,3 +1,7 @@
+/**
+ * Tipos do payload Azure DevOps Service Hooks e do contexto HTTP da Function.
+ * O Azure envia formatos distintos por evento (PR, push, pipeline); por isso muitos campos são opcionais.
+ */
 export interface AzureResource {
   title?: string;
   sourceBranch?: string;
